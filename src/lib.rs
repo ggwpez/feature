@@ -24,7 +24,6 @@
 //! passed down:
 //!
 //! ```pre
-//! Analyzing workspace
 //! crate "frame-support"
 //!   feature "runtime-benchmarks"
 //!     must propagate to:

@@ -23,7 +23,6 @@ feature lint propagate-feature --manifest-path ../substrate/Cargo.toml --feature
 The output reveals that there are some dependencies that expose the feature but don't get it passed down:  
 
 ```pre
-Analyzing workspace
 crate "frame-support"
   feature "runtime-benchmarks"
     must propagate to:

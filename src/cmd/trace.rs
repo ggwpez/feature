@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct TraceCmd {
 	#[allow(missing_docs)]
 	#[clap(flatten)]
-	tree_args: super::TreeArgs,
+	cargo_args: super::CargoArgs,
 
 	/// Show the source location of crates in the output.
 	#[clap(long)]
@@ -46,7 +46,7 @@ pub struct TraceCmd {
 
 impl TraceCmd {
 	pub(crate) fn run(&self) {
-		let meta = self.tree_args.load_metadata().expect("Loads metadata");
+		let meta = self.cargo_args.load_metadata().expect("Loads metadata");
 		let (dag, index) = self.build_dag(meta).expect("Builds dependency graph");
 		let lookup = |id: &str| {
 			index

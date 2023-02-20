@@ -3,7 +3,7 @@
 
 //! Lint your feature usage by analyzing crate metadata.
 
-use crate::{autofix::AutoFixer, cmd::resolve_dep, CrateId};
+use crate::{autofix::AutoFixer, prelude::*, cmd::resolve_dep, CrateId};
 use cargo_metadata::PackageId;
 use std::{
 	collections::{BTreeMap, BTreeSet},
@@ -22,6 +22,48 @@ pub struct LintCmd {
 pub enum SubCommand {
 	/// Check whether features are properly propagated.
 	PropagateFeature(PropagateFeatureCmd),
+	/// A specific feature never enables a specific other feature.
+	NeverEnables(NeverEnablesCmd),
+	/// A specific feature never enables a specific other feature.
+	NeverImplies(NeverImpliesCmd),
+}
+
+#[derive(Debug, clap::Parser)]
+pub struct NeverEnablesCmd {
+	#[allow(missing_docs)]
+	#[clap(flatten)]
+	cargo_args: super::CargoArgs,
+
+	/// The left side of the feature implication.
+	///
+	/// Can be set to `default` for the default feature set.
+	#[clap(long, required = true)]
+	precondition: String,
+
+	/// The right side of the feature implication.
+	///
+	/// If [precondition] is enabled, this stays disabled.
+	#[clap(long, required = true)]
+	stays_disabled: String,
+}
+
+#[derive(Debug, clap::Parser)]
+pub struct NeverImpliesCmd {
+	#[allow(missing_docs)]
+	#[clap(flatten)]
+	cargo_args: super::CargoArgs,
+
+	/// The left side of the feature implication.
+	///
+	/// Can be set to `default` for the default feature set.
+	#[clap(long, required = true)]
+	precondition: String,
+
+	/// The right side of the feature implication.
+	///
+	/// If [precondition] is enabled, this stays disabled.
+	#[clap(long, required = true)]
+	stays_disabled: String,
 }
 
 /// Verifies that rust features are properly propagated.
@@ -29,7 +71,7 @@ pub enum SubCommand {
 pub struct PropagateFeatureCmd {
 	#[allow(missing_docs)]
 	#[clap(flatten)]
-	tree_args: super::TreeArgs,
+	cargo_args: super::CargoArgs,
 
 	/// The feature to check.
 	#[clap(long, required = true)]
@@ -60,18 +102,96 @@ impl LintCmd {
 	pub(crate) fn run(&self) {
 		match &self.subcommand {
 			SubCommand::PropagateFeature(cmd) => cmd.run(),
+			SubCommand::NeverEnables(cmd) => cmd.run(),
+			SubCommand::NeverImplies(cmd) => cmd.run(),
+		}
+	}
+}
+
+type CrateAndFeature = (String, String);
+
+impl NeverImpliesCmd {
+	pub fn run(&self) {
+		let meta = self.cargo_args.load_metadata().expect("Loads metadata");
+		log::info!(
+			"Checking that feature {:?} never enables {:?}",
+			self.precondition,
+			self.stays_disabled
+		);
+		let pkgs = meta.packages.clone();
+		let mut dag = Dag::<CrateAndFeature>::new();
+
+		for pkg in pkgs.iter() {
+			for (feature, deps) in pkg.features.iter() {
+				for dep in deps {
+					let mut splits = dep.split("/");
+					let dep = splits.next().unwrap();
+				}
+			}
+		}
+	}
+}
+
+impl NeverEnablesCmd {
+	pub fn run(&self) {
+		let meta = self.cargo_args.load_metadata().expect("Loads metadata");
+		log::info!(
+			"Checking that feature {:?} never enables {:?}",
+			self.precondition,
+			self.stays_disabled
+		);
+		let pkgs = meta.packages.clone();
+		// Crate -> dependencies that invalidate the assumption.
+		let mut offenders = BTreeMap::<CrateId, BTreeSet<CrateId>>::new();
+
+		for pkg in pkgs.iter() {
+			let Some(enabled) = pkg.features.get(&self.precondition) else {
+				continue;
+			};
+			// TODO do the same in other command.
+			if enabled.contains(&format!("{}", self.stays_disabled)) {
+				offenders.entry(pkg.id.to_string()).or_default().insert(pkg.id.to_string());
+			}
+
+			for dep in pkg.dependencies.iter() {
+				let Some(dep) = resolve_dep(&pkg, dep, &meta) else {
+					continue;
+				};
+
+				if enabled.contains(&format!("{}/{}", dep.name, self.stays_disabled)) {
+					offenders.entry(pkg.id.to_string()).or_default().insert(dep.id.to_string());
+				}
+			}
+		}
+
+		let lookup = |id: &str| {
+			let id = PackageId { repr: id.to_string() }; // TODO optimize
+			pkgs.iter()
+				.find(|pkg| pkg.id == id)
+				.unwrap_or_else(|| panic!("Could not find crate {id} in the metadata"))
+		};
+
+		for (id, deps) in offenders {
+			let krate = lookup(&id);
+
+			println!("crate {:?}\n  feature {:?}", krate.name, self.precondition);
+			// TODO support multiple left/right side features.
+			println!("    enables feature {:?} on dependencies:", self.stays_disabled);
+
+			for dep in deps {
+				println!("      {}", lookup(&dep).name);
+			}
 		}
 	}
 }
 
 impl PropagateFeatureCmd {
 	pub fn run(&self) {
-		log::info!("Using manifest: {:?}", self.tree_args.manifest_path);
 		// Allowed dir that we can write to.
-		let allowed_dir = canonicalize(&self.tree_args.manifest_path).unwrap();
+		let allowed_dir = canonicalize(&self.cargo_args.manifest_path).unwrap();
 		let allowed_dir = allowed_dir.parent().unwrap();
 		let feature = self.feature.clone();
-		let meta = self.tree_args.load_metadata().expect("Loads metadata");
+		let meta = self.cargo_args.load_metadata().expect("Loads metadata");
 		let pkgs = meta.packages.iter().collect::<Vec<_>>();
 		let mut to_check = pkgs.clone();
 		if !self.packages.is_empty() {
@@ -82,11 +202,6 @@ impl PropagateFeatureCmd {
 			panic!("No packages found: {:?}", self.packages);
 		}
 
-		if let Some(root) = meta.root_package() {
-			println!("Analyzing {root:?}");
-		} else {
-			println!("Analyzing workspace");
-		}
 		let lookup = |id: &str| {
 			let id = PackageId { repr: id.to_string() }; // TODO optimize
 			pkgs.iter()
@@ -108,9 +223,7 @@ impl PropagateFeatureCmd {
 			for dep in pkg.dependencies.iter() {
 				// TODO handle default features.
 				// Resolve the dep according to the metadata.
-				let resolved = resolve_dep(pkg, dep, &meta);
-
-				let Some(dep) = resolved else {
+				let Some(dep) = resolve_dep(pkg, dep, &meta) else {
 					// Either outside workspace or not resolved, possibly due to not being used at all because of the target or whatever.
 					feature_used = true;
 					continue;

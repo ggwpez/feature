@@ -42,7 +42,7 @@ impl Command {
 
 /// Arguments for how to load cargo metadata from a workspace.
 #[derive(Debug, clap::Parser)]
-pub struct TreeArgs {
+pub struct CargoArgs {
 	/// Cargo manifest path or directory.
 	///
 	/// For directories it appends a `Cargo.toml`.
@@ -58,7 +58,7 @@ pub struct TreeArgs {
 	pub offline: bool,
 }
 
-impl TreeArgs {
+impl CargoArgs {
 	/// Load the metadata of the rust project.
 	pub fn load_metadata(&self) -> Result<Metadata, String> {
 		let mut cmd = MetadataCommand::new();
@@ -67,7 +67,7 @@ impl TreeArgs {
 		} else {
 			self.manifest_path.clone()
 		};
-		log::debug!("Using manifest path: {:?}", manifest_path);
+		log::debug!("Manifest at: {:?}", manifest_path);
 		cmd.manifest_path(&manifest_path);
 		cmd.features(cargo_metadata::CargoOpt::AllFeatures);
 
