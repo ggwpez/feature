@@ -53,6 +53,19 @@ Which results in this diff:
 
 The auto-fix is currently a bit coarse, and does not check for optional dependencies. It will also not add the feature to crates that do not have it, but need it because of a dependency. This will be fixed soon.
 
+## Example - Feature tracing
+
+Let's say you want to ensure that specific features are never enabled by default. For this example we will use the `try-runtime` feature of [Substrate]. Check out branch `oty-faulty-feature-demo` and try:
+
+```bash
+feature lint never-implies --manifest-path ../substrate/Cargo.toml --precondition default --stays-disabled try-runtime --offline --workspace
+```
+Errors correctly with:
+```pre
+Feature 'default' implies 'try-runtime' via path:
+  frame-benchmarking/default -> frame-benchmarking/std -> frame-system/std -> frame-support/wrong -> frame-support/wrong2 -> frame-support/try-runtime
+```
+
 ## Example - Dependency tracing
 
 Recently there was a build error in the [Substrate](https://github.com/paritytech/substrate) master CI which was caused by a downstream dependency [`snow`](https://github.com/mcginty/snow/issues/146). To investigate this, it is useful to see *how* Substrate depends on it.  

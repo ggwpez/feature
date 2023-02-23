@@ -162,6 +162,10 @@ where
 		self.edges.get_key_value(from).map(|(k, _)| k)
 	}
 
+	pub fn lhs_nodes<'a>(&'a self) -> impl Iterator<Item = &'a T> {
+		self.edges.keys()
+	}
+
 	/// Calculate the transitive hull of `self`.
 	pub fn transitive_hull(&mut self) {
 		let topology = self.clone();
@@ -229,6 +233,35 @@ where
 			}
 			visited.insert(node);
 			if node == to {
+				return path.try_into().ok()
+			}
+			if let Some(neighbors) = self.edges.get(node) {
+				for neighbor in neighbors.iter() {
+					path.push(neighbor);
+					stack.push((neighbor, path.clone()));
+					path.pop();
+				}
+			}
+		}
+		None
+	}
+
+	/// Check if any node which fulfills `pred` can be reached from `from` and return the first
+	/// path.
+	pub fn reachable_predicate<'a>(
+		&'a self,
+		from: &'a T,
+		pred: impl Fn(&T) -> bool,
+	) -> Option<Path<'a, T>> {
+		let mut visited = BTreeSet::new();
+		let mut stack = vec![(from, vec![from])];
+
+		while let Some((node, mut path)) = stack.pop() {
+			if visited.contains(&node) {
+				continue
+			}
+			visited.insert(node);
+			if pred(node) {
 				return path.try_into().ok()
 			}
 			if let Some(neighbors) = self.edges.get(node) {

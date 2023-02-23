@@ -3,8 +3,12 @@
 
 //! Lint your feature usage by analyzing crate metadata.
 
-use crate::{autofix::AutoFixer, prelude::*, cmd::resolve_dep, CrateId};
+use crate::{autofix::AutoFixer, cmd::resolve_dep, prelude::*, CrateId};
 use cargo_metadata::PackageId;
+use core::{
+	fmt,
+	fmt::{Display, Formatter},
+};
 use std::{
 	collections::{BTreeMap, BTreeSet},
 	fs::canonicalize,
@@ -64,6 +68,18 @@ pub struct NeverImpliesCmd {
 	/// If [precondition] is enabled, this stays disabled.
 	#[clap(long, required = true)]
 	stays_disabled: String,
+
+	/// Show the source location of crates in the output.
+	#[clap(long)]
+	show_source: bool,
+
+	/// Show the version of the crates in the output.
+	#[clap(long)]
+	show_version: bool,
+
+	/// Delimiter for rendering dependency paths.
+	#[clap(long, default_value = " -> ")]
+	path_delimiter: String,
 }
 
 /// Verifies that rust features are properly propagated.
@@ -108,13 +124,20 @@ impl LintCmd {
 	}
 }
 
-type CrateAndFeature = (String, String);
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct CrateAndFeature(String, String);
+
+impl Display for CrateAndFeature {
+	fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+		write!(f, "{}/{}", self.0, self.1)
+	}
+}
 
 impl NeverImpliesCmd {
 	pub fn run(&self) {
 		let meta = self.cargo_args.load_metadata().expect("Loads metadata");
 		log::info!(
-			"Checking that feature {:?} never enables {:?}",
+			"Checking that feature {:?} never implies {:?}",
 			self.precondition,
 			self.stays_disabled
 		);
@@ -122,11 +145,151 @@ impl NeverImpliesCmd {
 		let mut dag = Dag::<CrateAndFeature>::new();
 
 		for pkg in pkgs.iter() {
+			for dep in &pkg.dependencies {
+				if dep.uses_default_features {
+					dag.add_edge(
+						CrateAndFeature(pkg.id.to_string(), "default".into()),
+						CrateAndFeature(dep.name.clone(), "default".into()),
+					);
+				}
+				for feature in &dep.features {
+					dag.add_edge(
+						CrateAndFeature(pkg.id.to_string(), "default".into()),
+						CrateAndFeature(dep.name.clone(), feature.into()),
+					);
+				}
+			}
+
 			for (feature, deps) in pkg.features.iter() {
 				for dep in deps {
-					let mut splits = dep.split("/");
-					let dep = splits.next().unwrap();
+					if dep.contains(":") {
+						let mut splits = dep.split(":");
+						let dep = splits.nth(1).unwrap();
+						let dep_feature = "default";
+						//log::info!("Resolving '{}' as dependency of {}: {:?}", dep, pkg.name,
+						// pkg.dependencies.iter().find(|d| d.name == dep));
+						let dep = pkg
+							.dependencies
+							.iter()
+							.find(|d| d.rename.clone().unwrap_or(d.name.clone()) == dep)
+							.unwrap();
+
+						let dep_id = match resolve_dep(pkg, dep, &meta) {
+							None => {
+								// This can happen for optional dependencies who are not enabled, or
+								// a weird `target` is specified or it is a dev dependency.
+								// In this case we just go by name. It is a dead-end anyway.
+								dep.name.clone()
+							},
+							Some(dep) => dep.id.to_string(),
+						};
+						dag.add_edge(
+							CrateAndFeature(pkg.id.to_string(), feature.clone()),
+							CrateAndFeature(dep_id.clone(), dep_feature.into()),
+						);
+
+						log::trace!(
+							"Adding: ({}, {}) -> ({}, {})",
+							pkg.id.to_string(),
+							feature,
+							dep_id,
+							dep_feature
+						);
+					} else if dep.contains("/") {
+						let mut splits = dep.split("/");
+						let dep = splits.next().unwrap().replace("?", "");
+						let dep_feature = splits.next().unwrap();
+
+						let dep = pkg
+							.dependencies
+							.iter()
+							.find(|d| d.rename.clone().unwrap_or(d.name.clone()) == dep)
+							.expect(&format!(
+								"Could not resolve dep {} of {}",
+								dep,
+								pkg.id.to_string()
+							));
+
+						let dep_id = match resolve_dep(pkg, dep, &meta) {
+							None => {
+								// This can happen for optional dependencies who are not enabled, or
+								// a weird `target` is specified or it is a dev dependency.
+								// In this case we just go by name. It is a dead-end anyway.
+								dep.name.clone()
+							},
+							Some(dep) => dep.id.to_string(),
+						};
+						dag.add_edge(
+							CrateAndFeature(pkg.id.to_string(), feature.clone()),
+							CrateAndFeature(dep_id.clone(), dep_feature.into()),
+						);
+
+						log::trace!(
+							"Adding: ({}, {}) -> ({}, {})",
+							pkg.id.to_string(),
+							feature,
+							dep_id,
+							dep_feature
+						);
+					} else {
+						let dep_feature = dep;
+						// Sanity check
+						assert!(pkg.features.contains_key(dep_feature));
+						// Enables one of its own features.
+						log::trace!(
+							"Adding: ({}, {}) -> ({}, {})",
+							pkg.id.to_string(),
+							feature,
+							pkg.id.to_string(),
+							dep_feature
+						);
+						dag.add_edge(
+							CrateAndFeature(pkg.id.to_string(), feature.clone()),
+							CrateAndFeature(pkg.id.to_string(), dep_feature.into()),
+						)
+					}
 				}
+			}
+		}
+
+		for CrateAndFeature(pkg, feature) in dag.lhs_nodes() {
+			let crate_and_feature = CrateAndFeature(pkg.clone(), feature.clone());
+			if feature == &self.precondition {
+				let Some(path) = dag.reachable_predicate(&crate_and_feature, |CrateAndFeature(_, enabled)| enabled == &self.stays_disabled) else {
+					continue;
+				};
+
+				// TODO cleanup this cluster fuck
+				let lookup = |id: &str| {
+					pkgs
+						.iter().find(|pkg| pkg.id.to_string() == id)
+						.unwrap_or_else(|| panic!("Could not find crate {id} in the metadata"))
+				};
+
+				let delimiter = self.path_delimiter.replace("\\n", "\n").replace("\\t", "\t");
+				let mut out = String::new();
+				let mut is_first = true;
+
+				path.for_each(|CrateAndFeature(id, feature)| {
+					let krate = lookup(id);
+					if !is_first {
+						out.push_str(&delimiter);
+					}
+					is_first = false;
+					out.push_str(&format!("{}/{}", krate.name, feature));
+					if self.show_version {
+						out.push_str(&format!(" v{}", krate.version));
+					}
+					if self.show_source {
+						if let Some(source) = krate.source.as_ref() {
+							out.push_str(&format!(" ({})", source.repr));
+						}
+					}
+				});
+				println!("Feature '{}' implies '{}' via path:\n  {}", self.precondition,
+				 self.stays_disabled, out);
+
+				std::process::exit(1);
 			}
 		}
 	}
