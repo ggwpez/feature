@@ -60,11 +60,14 @@ Let's say you want to ensure that specific features are never enabled by default
 ```bash
 feature lint never-implies --manifest-path ../substrate/Cargo.toml --precondition default --stays-disabled try-runtime --offline --workspace
 ```
+
 Errors correctly with:
 ```pre
 Feature 'default' implies 'try-runtime' via path:
   frame-benchmarking/default -> frame-benchmarking/std -> frame-system/std -> frame-support/wrong -> frame-support/wrong2 -> frame-support/try-runtime
 ```
+
+This functionality currently only shows the first path that it found as optimization.
 
 ## Example - Dependency tracing
 
